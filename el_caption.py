@@ -64,34 +64,33 @@ class ImageTaggerApp:
         filtered_images = []
 
         # Preprocess query
-        query = query.strip().lower()
+        query = query.strip()
         include_tags = []
         exclude_tags = []
 
-        # Parse AND, OR, NOT
+        # Handle NOT conditions first
+        not_matches = re.findall(r"!\(([^)]+)\)", query)
+        exclude_tags = [tag.strip() for tag in not_matches]
+        query = re.sub(r"!\([^)]+\)", "", query)
+
+        # Handle OR conditions
         if "OR" in query:
-            or_tags = [tag.strip() for tag in query.split("OR")]
+            or_tags = [tag.strip() for tag in query.split("OR") if tag.strip()]
             for image_name, tags in self.image_tags.items():
                 if any(tag in tags for tag in or_tags):
                     filtered_images.append(image_name)
         else:
-            # Handle NOT conditions
-            if "!(" in query:
-                not_conditions = [cond.strip("!) ") for cond in query.split("!(") if ")" in cond]
-                exclude_tags.extend(not_conditions)
-                query = re.sub(r"!\(.*?\)", "", query)
-
-            # Handle AND (comma-separated or remaining tags)
+            # Handle AND conditions (comma-separated or remaining tags)
             include_tags = [tag.strip() for tag in query.split(",") if tag.strip()]
-
             for image_name, tags in self.image_tags.items():
                 # Match inclusion and exclusion conditions
-                if all(any(fnmatch.fnmatch(tag, pattern) for tag in tags) for pattern in include_tags) and not any(
-                    any(fnmatch.fnmatch(tag, pattern) for tag in tags) for pattern in exclude_tags
+                if all(any(fnmatch.fnmatch(t, pattern) for t in tags) for pattern in include_tags) and not any(
+                    any(fnmatch.fnmatch(t, pattern) for t in tags) for pattern in exclude_tags
                 ):
                     filtered_images.append(image_name)
 
         return filtered_images
+
 
     def apply_filter(self):
         """Apply the filter and update the image grid."""
@@ -332,7 +331,11 @@ class ImageTaggerApp:
         if not confirm:
             return
 
-        # Remove the tag from all images
+        # Preserve current scroll position and selection
+        scroll_position = self.all_tags_list.yview()
+        selected_index = self.all_tags_list.curselection()
+
+        # Remove the tag from all images and queue for saving
         images_to_save = []
         for image_name, tags in self.image_tags.items():
             if tag_to_delete in tags:
@@ -346,21 +349,24 @@ class ImageTaggerApp:
         # Update UI
         self.update_ui()
 
-        # Refresh the currently selected image, if it contains the deleted tag
-        if self.current_image_index != -1:
-            image_name = self.images[self.current_image_index]
-            if tag_to_delete in self.image_tags[image_name]:
-                self.image_tags_list.delete(0, tk.END)
-                for tag in self.image_tags[image_name]:  # Refresh with the updated tags
-                    self.image_tags_list.insert(tk.END, tag)
+        # Restore the scroll position and selection
+        self.all_tags_list.yview_moveto(scroll_position[0])
+        if selected_index:
+            self.all_tags_list.selection_set(selected_index[0])
 
-        # Queue updated images for saving
-        for image_name in images_to_save:
-            self.queue_file_save(image_name)
+        # Queue file operations in the background
+        threading.Thread(target=self.queue_deletion_operations, args=(images_to_save, tag_to_delete)).start()
 
         print(f"Deleted tag: {tag_to_delete}")
 
+    def queue_deletion_operations(self, images_to_save, tag_to_delete):
+        """Handle file updates for deletions in the background."""
+        for image_name in images_to_save:
+            self.queue_file_save(image_name)
 
+        print(f"Completed deletion operations for tag: {tag_to_delete}")
+
+    
     def rename_tag(self):
         """Rename a tag across all images."""
         selection = self.all_tags_list.curselection()
@@ -374,6 +380,10 @@ class ImageTaggerApp:
         if not new_tag or new_tag.strip() == old_tag:
             return  # Do nothing if no new name is provided or name hasn't changed
         new_tag = new_tag.strip()
+
+        # Preserve current scroll position and selection
+        scroll_position = self.all_tags_list.yview()
+        selected_index = self.all_tags_list.curselection()
 
         images_to_save = set()  # Track images that need saving
         new_all_tags = set(self.all_tags)  # Copy current tags
@@ -394,11 +404,17 @@ class ImageTaggerApp:
         # Update UI
         self.update_ui()
 
+        # Restore scroll position and selection
+        self.all_tags_list.yview_moveto(scroll_position[0])
+        if selected_index:
+            self.all_tags_list.selection_set(selected_index[0])
+
         # Queue updated images for saving
         for image_name in images_to_save:
             self.queue_file_save(image_name)
 
         print(f"Renamed tag '{old_tag}' to '{new_tag}'. Updated {len(images_to_save)} images.")
+
 
 
 
@@ -626,6 +642,10 @@ class ImageTaggerApp:
         if self.current_image_index == -1:
             return
 
+        # Get the default system colors
+        default_bg = self.root.cget("bg")
+        default_fg = self.all_tags_list.cget("fg")
+
         # Get the tags for the current image
         image_name = self.images[self.current_image_index]
         current_image_tags = set(self.image_tags[image_name])
@@ -633,9 +653,11 @@ class ImageTaggerApp:
         # Reset and update background colors in the All Tags list
         for index, tag in enumerate(self.all_tags_list.get(0, tk.END)):
             if tag in current_image_tags:
-                self.all_tags_list.itemconfig(index, bg="lightgreen")
+                self.all_tags_list.itemconfig(index, bg="lightgreen", fg=default_fg)
             else:
-                self.all_tags_list.itemconfig(index, bg="white")
+                self.all_tags_list.itemconfig(index, bg=default_bg, fg=default_fg)
+
+
 
 
     def on_close(self):
